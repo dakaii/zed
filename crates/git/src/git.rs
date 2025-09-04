@@ -95,6 +95,14 @@ actions!(
         OpenModifiedFiles,
         /// Clones a repository.
         Clone,
+        /// Switches to the left pane in side-by-side diff view.
+        SwitchToLeftPane,
+        /// Switches to the right pane in side-by-side diff view.
+        SwitchToRightPane,
+        /// Toggles between left and right panes in side-by-side diff view.
+        ToggleDiffPane,
+        /// Opens a side-by-side diff view for the current file.
+        OpenSideBySideDiff,
     ]
 );
 

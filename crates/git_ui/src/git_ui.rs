@@ -1,4 +1,4 @@
-use std::any::Any;
+use std::any::{Any, TypeId};
 
 use ::settings::Settings;
 use command_palette_hooks::CommandPaletteFilter;
@@ -20,7 +20,9 @@ use ui::prelude::*;
 use workspace::{ModalView, Workspace};
 use zed_actions;
 
-use crate::{git_panel::GitPanel, text_diff_view::TextDiffView};
+use crate::{
+    git_panel::GitPanel, side_by_side_diff_view::SideBySideDiffView, text_diff_view::TextDiffView,
+};
 
 mod askpass_modal;
 pub mod branch_picker;
@@ -36,13 +38,14 @@ pub mod picker_prompt;
 pub mod project_diff;
 pub(crate) mod remote_output;
 pub mod repository_selector;
+pub mod side_by_side_diff_view;
 pub mod text_diff_view;
 
 actions!(
     git,
     [
         /// Resets the git onboarding state to show the tutorial again.
-        ResetOnboarding
+        ResetOnboarding,
     ]
 );
 
@@ -191,6 +194,42 @@ pub fn init(cx: &mut App) {
                 };
             },
         );
+        workspace.register_action(|workspace, _: &git::SwitchToLeftPane, window, cx| {
+            if let Some(item) = workspace.active_item(cx) {
+                if let Some(side_by_side_view) =
+                    item.downcast::<side_by_side_diff_view::SideBySideDiffView>()
+                {
+                    side_by_side_view.update(cx, |view, cx| {
+                        view.switch_to_left_pane(window, cx);
+                    });
+                }
+            }
+        });
+        workspace.register_action(|workspace, _: &git::SwitchToRightPane, window, cx| {
+            if let Some(item) = workspace.active_item(cx) {
+                if let Some(side_by_side_view) =
+                    item.downcast::<side_by_side_diff_view::SideBySideDiffView>()
+                {
+                    side_by_side_view.update(cx, |view, cx| {
+                        view.switch_to_right_pane(window, cx);
+                    });
+                }
+            }
+        });
+        workspace.register_action(|workspace, _: &git::ToggleDiffPane, window, cx| {
+            if let Some(item) = workspace.active_item(cx) {
+                if let Some(side_by_side_view) =
+                    item.downcast::<side_by_side_diff_view::SideBySideDiffView>()
+                {
+                    side_by_side_view.update(cx, |view, cx| {
+                        view.toggle_pane(window, cx);
+                    });
+                }
+            }
+        });
+        workspace.register_action(|workspace, _: &git::OpenSideBySideDiff, window, cx| {
+            open_side_by_side_diff(workspace, window, cx);
+        });
     })
     .detach();
 }
@@ -221,6 +260,71 @@ fn open_modified_files(
     for path in modified_paths {
         workspace.open_path(path, None, true, window, cx).detach();
     }
+}
+
+fn open_side_by_side_diff(
+    workspace: &mut Workspace,
+    window: &mut Window,
+    cx: &mut Context<Workspace>,
+) {
+    // Get the current active editor
+    let Some(active_item) = workspace.active_item(cx) else {
+        return;
+    };
+
+    // Try to get the editor from the active item
+    let editor = if let Some(editor) = active_item.downcast::<Editor>() {
+        editor
+    } else if let Some(editor) = active_item.act_as_type(TypeId::of::<Editor>(), cx) {
+        editor.downcast::<Editor>().unwrap()
+    } else {
+        return;
+    };
+
+    // Get the buffer from the editor
+    let buffer = editor.read(cx).buffer().read(cx);
+    let Some(file) = buffer.as_singleton().and_then(|b| b.read(cx).file()) else {
+        return;
+    };
+
+    let project_path = file.path();
+    let project = workspace.project().read(cx);
+
+    // Get the Git repository
+    let git_store = project.git_store();
+
+    let Some(repo) = git_store.read(cx).active_repository() else {
+        return;
+    };
+    let repo = repo.read(cx);
+
+    // Get the current file status
+    let Some(status) = repo
+        .cached_status()
+        .find(|entry| entry.repo_path.as_ref() == project_path.as_ref())
+        .map(|entry| entry.status)
+    else {
+        return;
+    };
+
+    if !status.is_modified() && !status.is_created() && !status.is_deleted() {
+        return;
+    }
+
+    // For now, just open a simple side-by-side diff with the current file
+    // This is a simplified version - in a real implementation, you'd want to
+    // create proper buffers for the old and new versions
+    let current_buffer = buffer.as_singleton().unwrap();
+
+    // Create a copy of the current buffer for the "old" version
+    let old_buffer = cx.new(|cx| {
+        let current_snapshot = current_buffer.read(cx).snapshot();
+        language::Buffer::local(current_snapshot.text(), cx)
+    });
+
+    // Open the side-by-side diff view
+    let task = SideBySideDiffView::open(old_buffer, current_buffer, workspace, window, cx);
+    task.detach();
 }
 
 pub fn git_status_icon(status: FileStatus) -> impl IntoElement {
